@@ -74,11 +74,11 @@ async function handleRequest(request) {
     }
 
     // Create proxied request
-    const proxyRequest = createProxyRequest(request, targetURL)
+    const { req: proxyRequest, droppedHeaders } = createProxyRequest(request, targetURL)
     const response = await fetch(proxyRequest)
 
     // Process and return response
-    return createProxyResponse(response, request.method)
+    return createProxyResponse(response, request.method, droppedHeaders)
 
   } catch (error) {
     return createErrorResponse('Proxy request failed', {
@@ -110,13 +110,24 @@ function createProxyRequest(request, targetURL) {
   const proxyHeaders = new Headers()
   const allowedHeaders = [
     'accept', 'accept-language', 'accept-encoding', 'authorization',
-    'cache-control', 'content-type', 'origin', 'referer', 'user-agent'
+    'cache-control', 'content-type', 'content-length', 'cookie',
+    'origin', 'referer', 'user-agent', 'if-none-match', 'if-modified-since',
+    'range', 'pragma', 'x-requested-with'
+  ]
+  const ignoredHeaders = [
+    'host', 'connection', 'cf-connecting-ip', 'cf-ipcountry', 'cf-ray',
+    'cf-visitor', 'cf-worker', 'x-forwarded-proto', 'x-forwarded-for',
+    'x-real-ip', 'true-client-ip', 'cdn-loop', 'x-my-x-forwarded-for'
   ]
 
-  // Copy allowed headers
+  const droppedHeaders = []
+
   for (const [key, value] of request.headers) {
-    if (allowedHeaders.includes(key.toLowerCase())) {
+    const k = key.toLowerCase()
+    if (allowedHeaders.includes(k)) {
       proxyHeaders.set(key, value)
+    } else if (!ignoredHeaders.includes(k)) {
+      droppedHeaders.push(k)
     }
   }
 
@@ -130,19 +141,27 @@ function createProxyRequest(request, targetURL) {
     proxyHeaders.set('X-Forwarded-For', generateRandomIP())
   }
 
-  return new Request(targetURL.toString(), {
-    method: request.method,
-    headers: proxyHeaders,
-    body: ['GET', 'HEAD'].includes(request.method) ? null : request.body
-  })
+  return {
+    req: new Request(targetURL.toString(), {
+      method: request.method,
+      headers: proxyHeaders,
+      body: ['GET', 'HEAD'].includes(request.method) ? null : request.body
+    }),
+    droppedHeaders
+  }
 }
 
-function createProxyResponse(response, requestMethod) {
+function createProxyResponse(response, requestMethod, droppedHeaders) {
   const responseHeaders = new Headers()
 
   // Copy ALL response headers (let browser handle encoding)
   for (const [key, value] of response.headers) {
     responseHeaders.set(key, value)
+  }
+
+  // Report dropped headers back to the local proxy
+  if (droppedHeaders && droppedHeaders.length > 0) {
+    responseHeaders.set('X-Dropped-Headers', droppedHeaders.join(', '))
   }
 
   // Add/Override CORS headers
@@ -1615,10 +1634,21 @@ func (ps *ProxyServer) HandleCONNECT(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Write response
+	// Check for dropped headers warning from Worker
+	if ps.Verbose {
+		if dropped := resp.Header.Get("X-Dropped-Headers"); dropped != "" {
+			fmt.Printf("      ⚠️  Dropped headers: %s\n", dropped)
+			fmt.Println("         💡 Add these to allowedHeaders in WorkerScript if needed")
+		}
+	}
+
+	// Write response (strip internal header before forwarding to client)
 	tlsConn.Write([]byte(fmt.Sprintf("HTTP/1.1 %d %s\r\n", resp.StatusCode, resp.Status)))
 
 	for k, v := range resp.Header {
+		if strings.EqualFold(k, "X-Dropped-Headers") {
+			continue
+		}
 		for _, vv := range v {
 			tlsConn.Write([]byte(fmt.Sprintf("%s: %s\r\n", k, vv)))
 		}
