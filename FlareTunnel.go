@@ -179,6 +179,7 @@ type Account struct {
 	APIToken  string `json:"api_token"`
 	AccountID string `json:"account_id"`
 	ZoneID    string `json:"zone_id,omitempty"`
+	Subdomain string `json:"subdomain,omitempty"`
 }
 
 // Config represents the FlareTunnel configuration
@@ -217,7 +218,7 @@ type CloudflareClient struct {
 	subdomain string
 }
 
-func NewCloudflareClient(apiToken, accountID string) *CloudflareClient {
+func NewCloudflareClient(apiToken, accountID, subdomain string) *CloudflareClient {
 	return &CloudflareClient{
 		APIToken:  apiToken,
 		AccountID: accountID,
@@ -226,6 +227,7 @@ func NewCloudflareClient(apiToken, accountID string) *CloudflareClient {
 			"Authorization": "Bearer " + apiToken,
 			"Content-Type":  "application/json",
 		},
+		subdomain: subdomain,
 	}
 }
 
@@ -234,6 +236,19 @@ func (c *CloudflareClient) GetSubdomain() (string, error) {
 		return c.subdomain, nil
 	}
 
+	subdomain, err := c.FetchSubdomain()
+	if err != nil {
+		fmt.Printf("⚠️  [GetSubdomain] Warning: Failed to retrieve subdomain from API: %v\n", err)
+		fmt.Println("👉 To fix this, either give your API Token 'Account - Cloudflare Workers: Read' permission, or manually add '\"subdomain\": \"your-subdomain\"' for this account in flaretunnel.json")
+		c.subdomain = strings.ToLower(c.AccountID)
+		return c.subdomain, nil
+	}
+
+	c.subdomain = subdomain
+	return c.subdomain, nil
+}
+
+func (c *CloudflareClient) FetchSubdomain() (string, error) {
 	url := fmt.Sprintf("%s/accounts/%s/workers/subdomain", c.BaseURL, c.AccountID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -247,27 +262,27 @@ func (c *CloudflareClient) GetSubdomain() (string, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		c.subdomain = strings.ToLower(c.AccountID)
-		return c.subdomain, nil
+		return "", err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 200 {
-		var result struct {
-			Result struct {
-				Subdomain string `json:"subdomain"`
-			} `json:"result"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&result); err == nil {
-			if result.Result.Subdomain != "" {
-				c.subdomain = result.Result.Subdomain
-				return c.subdomain, nil
-			}
-		}
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("API status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	c.subdomain = strings.ToLower(c.AccountID)
-	return c.subdomain, nil
+	var result struct {
+		Result struct {
+			Subdomain string `json:"subdomain"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if result.Result.Subdomain == "" {
+		return "", fmt.Errorf("empty subdomain in API response")
+	}
+	return result.Result.Subdomain, nil
 }
 
 func (c *CloudflareClient) CreateWorker(name string) (*Worker, error) {
@@ -665,7 +680,7 @@ func NewFlareTunnel(configFile string) (*FlareTunnel, error) {
 	}
 
 	for _, account := range config.Accounts {
-		ft.Clients[account.Name] = NewCloudflareClient(account.APIToken, account.AccountID)
+		ft.Clients[account.Name] = NewCloudflareClient(account.APIToken, account.AccountID, account.Subdomain)
 	}
 
 	return ft, nil
@@ -1866,10 +1881,25 @@ func setupConfig() error {
 			break
 		}
 
+		// Try to auto-detect subdomain
+		fmt.Print("   Detecting workers.dev subdomain... ")
+		tempClient := NewCloudflareClient(apiToken, accountID, "")
+		subdomain, err := tempClient.FetchSubdomain()
+		if err == nil {
+			fmt.Printf("Detected '%s'\n", subdomain)
+		} else {
+			fmt.Println("Failed")
+			fmt.Printf("⚠️  Could not auto-detect subdomain: %v\n", err)
+			fmt.Print("   Enter your workers.dev subdomain manually (e.g., 'kleggy00') [leave empty to skip]: ")
+			subdomain, _ = reader.ReadString('\n')
+			subdomain = strings.TrimSpace(subdomain)
+		}
+
 		accounts = append(accounts, Account{
 			Name:      accountName,
 			APIToken:  apiToken,
 			AccountID: accountID,
+			Subdomain: subdomain,
 		})
 
 		fmt.Printf("✅ Account '%s' added!\n", accountName)
