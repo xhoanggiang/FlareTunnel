@@ -112,7 +112,7 @@ function createProxyRequest(request, targetURL) {
     'accept', 'accept-language', 'accept-encoding', 'authorization',
     'cache-control', 'content-type', 'content-length', 'cookie',
     'origin', 'referer', 'user-agent', 'if-none-match', 'if-modified-since',
-    'range', 'pragma', 'x-requested-with'
+    'range', 'pragma', 'x-requested-with', 'chatgpt-account-id'
   ]
   const ignoredHeaders = [
     'host', 'connection', 'cf-connecting-ip', 'cf-ipcountry', 'cf-ray',
