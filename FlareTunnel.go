@@ -313,13 +313,12 @@ func (c *CloudflareClient) CreateWorker(name string) (*Worker, error) {
 	writer := multipartWriter(&b)
 	
 	metadata := map[string]string{
-		"body_part":   "script",
 		"main_module": "worker.js",
 	}
 	metadataJSON, _ := json.Marshal(metadata)
 	
 	writer.WriteField("metadata", string(metadataJSON))
-	writer.WriteField("script", WorkerScript)
+	writer.WriteFile("worker.js", WorkerScript, "application/javascript+module")
 	contentType := writer.FormDataContentType()
 	writer.Close()
 
@@ -1843,6 +1842,13 @@ func (w *simpleMultipartWriter) WriteField(field, value string) {
 	w.buf.WriteString("--" + w.boundary + "\r\n")
 	w.buf.WriteString(fmt.Sprintf("Content-Disposition: form-data; name=\"%s\"\r\n\r\n", field))
 	w.buf.WriteString(value + "\r\n")
+}
+
+func (w *simpleMultipartWriter) WriteFile(filename, content, contentType string) {
+	w.buf.WriteString("--" + w.boundary + "\r\n")
+	w.buf.WriteString(fmt.Sprintf("Content-Disposition: form-data; name=\"%s\"; filename=\"%s\"\r\n", filename, filename))
+	w.buf.WriteString(fmt.Sprintf("Content-Type: %s\r\n\r\n", contentType))
+	w.buf.WriteString(content + "\r\n")
 }
 
 func (w *simpleMultipartWriter) Close() {
