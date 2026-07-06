@@ -34,57 +34,55 @@ const (
 	Version           = "1.0.0"
 	CloudflareBaseURL = "https://api.cloudflare.com/client/v4"
 	WorkerScript      = `/**
- * FlareTunnel - Cloudflare Worker URL Redirection Script
+ * FlareTunnel - Cloudflare Worker URL Redirection Script (ES Modules)
  */
-addEventListener('fetch', event => {
-  event.respondWith(handleRequest(event.request))
-})
-
-async function handleRequest(request) {
-  try {
-    const url = new URL(request.url)
-    const targetUrl = getTargetUrl(url, request.headers)
-
-    if (!targetUrl) {
-      return createErrorResponse('No target URL specified', {
-        usage: {
-          query_param: '?url=https://example.com',
-          header: 'X-Target-URL: https://example.com',
-          path: '/https://example.com'
-        }
-      }, 400)
-    }
-
-    let targetURL
+export default {
+  async fetch(request) {
     try {
-      targetURL = new URL(targetUrl)
-    } catch (e) {
-      return createErrorResponse('Invalid target URL', { provided: targetUrl }, 400)
-    }
+      const url = new URL(request.url)
+      const targetUrl = getTargetUrl(url, request.headers)
 
-    // Build target URL with filtered query parameters
-    const targetParams = new URLSearchParams()
-    for (const [key, value] of url.searchParams) {
-      if (!['url', '_cb', '_t'].includes(key)) {
-        targetParams.append(key, value)
+      if (!targetUrl) {
+        return createErrorResponse('No target URL specified', {
+          usage: {
+            query_param: '?url=https://example.com',
+            header: 'X-Target-URL: https://example.com',
+            path: '/https://example.com'
+          }
+        }, 400)
       }
+
+      let targetURL
+      try {
+        targetURL = new URL(targetUrl)
+      } catch (e) {
+        return createErrorResponse('Invalid target URL', { provided: targetUrl }, 400)
+      }
+
+      // Build target URL with filtered query parameters
+      const targetParams = new URLSearchParams()
+      for (const [key, value] of url.searchParams) {
+        if (!['url', '_cb', '_t'].includes(key)) {
+          targetParams.append(key, value)
+        }
+      }
+      if (targetParams.toString()) {
+        targetURL.search = targetParams.toString()
+      }
+
+      // Create proxied request
+      const { req: proxyRequest, droppedHeaders } = createProxyRequest(request, targetURL)
+      const response = await fetch(proxyRequest)
+
+      // Process and return response
+      return createProxyResponse(response, request.method, droppedHeaders)
+
+    } catch (error) {
+      return createErrorResponse('Proxy request failed', {
+        message: error.message,
+        timestamp: new Date().toISOString()
+      }, 500)
     }
-    if (targetParams.toString()) {
-      targetURL.search = targetParams.toString()
-    }
-
-    // Create proxied request
-    const { req: proxyRequest, droppedHeaders } = createProxyRequest(request, targetURL)
-    const response = await fetch(proxyRequest)
-
-    // Process and return response
-    return createProxyResponse(response, request.method, droppedHeaders)
-
-  } catch (error) {
-    return createErrorResponse('Proxy request failed', {
-      message: error.message,
-      timestamp: new Date().toISOString()
-    }, 500)
   }
 }
 
